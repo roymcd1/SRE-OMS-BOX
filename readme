@@ -1,0 +1,15 @@
+🔹 Who is on call now
+
+Returns the primary and secondary on-call people for the current week.
+
+🔹 Who is on call next week
+
+Returns the primary and secondary on-call people for the upcoming week.
+
+🔹 Who is on call in 2 weeks / last week / on a specific date
+
+Supports flexible natural language queries to retrieve the on-call schedule for a specified week or date.
+
+🔹 When am I on call
+
+Given a name, returns the next 3 dates that person is either primary or secondary on-call.

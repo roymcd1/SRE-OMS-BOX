@@ -1,0 +1,6 @@
+flask
+boxsdk
+python-dotenv
+openpyxl
+requests
+dateparser
