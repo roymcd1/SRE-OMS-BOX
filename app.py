@@ -1,20 +1,24 @@
 import os
 from flask import Flask, request, jsonify
 from boxsdk import JWTAuth, Client
-from dotenv import load_dotenv
 from datetime import datetime, timedelta
 import openpyxl
 from io import BytesIO
 import dateparser
+import json
 
-# Load environment variables
-load_dotenv()
+# Environment variable for BOX file ID
 BOX_FILE_ID = os.getenv("BOX_FILE_ID")
-assert BOX_FILE_ID, "BOX_FILE_ID must be set in .env"
+assert BOX_FILE_ID, "BOX_FILE_ID must be set"
 
-# Box authentication
-auth = JWTAuth.from_settings_file("box_config.json")
-auth.authenticate_instance()
+# Box config from mounted secret path
+BOX_CONFIG_PATH = "/secrets/box_config/box_config.json"
+
+# Authenticate with Box using secret file
+with open(BOX_CONFIG_PATH) as config_file:
+    box_config = json.load(config_file)
+
+auth = JWTAuth.from_settings_dictionary(box_config)
 client = Client(auth)
 
 # Flask app
