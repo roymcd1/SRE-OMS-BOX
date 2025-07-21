@@ -1,24 +1,32 @@
 import os
+import json
 from flask import Flask, request, jsonify
 from boxsdk import JWTAuth, Client
+from dotenv import load_dotenv
 from datetime import datetime, timedelta
 import openpyxl
 from io import BytesIO
 import dateparser
-import json
 
-# Environment variable for BOX file ID
+# Load environment variables
+load_dotenv()
 BOX_FILE_ID = os.getenv("BOX_FILE_ID")
-assert BOX_FILE_ID, "BOX_FILE_ID must be set"
+assert BOX_FILE_ID, "BOX_FILE_ID must be set in .env"
 
-# Box config from mounted secret path
-BOX_CONFIG_PATH = "/secrets/box_config/box_config.json"
+# Box authentication (boxsdk >=3.0 style)
+with open("box_config.json") as f:
+    config = json.load(f)
 
-# Authenticate with Box using secret file
-with open(BOX_CONFIG_PATH) as config_file:
-    box_config = json.load(config_file)
+auth = JWTAuth(
+    client_id=config["boxAppSettings"]["clientID"],
+    client_secret=config["boxAppSettings"]["clientSecret"],
+    enterprise_id=config["enterpriseID"],
+    jwt_key_id=config["boxAppSettings"]["appAuth"]["publicKeyID"],
+    rsa_private_key_data=config["boxAppSettings"]["appAuth"]["privateKey"],
+    rsa_private_key_passphrase=config["boxAppSettings"]["appAuth"]["passphrase"].encode(),
+)
 
-auth = JWTAuth.from_settings_dictionary(box_config)
+auth.authenticate_instance()
 client = Client(auth)
 
 # Flask app
@@ -134,5 +142,5 @@ def when_am_i_on_call():
 
 if __name__ == "__main__":
     print(f"📦 BOX_FILE_ID = {BOX_FILE_ID}")
-    app.run(host="0.0.0.0", port=8080)
+    app.run(debug=False)
 
