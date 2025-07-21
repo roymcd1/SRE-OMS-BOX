@@ -142,5 +142,6 @@ def when_am_i_on_call():
 
 if __name__ == "__main__":
     print(f"📦 BOX_FILE_ID = {BOX_FILE_ID}")
-    app.run(debug=False)
+    port = int(os.environ.get("PORT", 8080))
+    app.run(host="0.0.0.0", port=port)
 
