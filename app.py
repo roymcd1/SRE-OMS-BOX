@@ -1,4 +1,4 @@
-import os
+iimport os
 import json
 from flask import Flask, request, jsonify
 from boxsdk import JWTAuth, Client
@@ -43,16 +43,24 @@ def download_excel_file(file_id):
 
 def clean_week_query(week_query):
     """
-    Remove common noise words before passing to dateparser.
+    Clean filler words like 'rota for', 'schedule:', etc. before date parsing.
     """
     text = week_query.lower()
+    # Remove punctuation that might confuse the parser
+    text = re.sub(r"[:.,]", " ", text)
+
+    # Words to strip out
     noise_words = [
-        "rota", "for", "the", "schedule", "on call", "duty", "shift",
-        "who's", "whos", "who is", "what's", "when is", ":", "next"
+        "rota", "schedule", "on call", "duty", "shift",
+        "for", "the", "who's", "whos", "who is", "what's", "when is"
     ]
+
     for word in noise_words:
         text = re.sub(rf"\b{re.escape(word)}\b", "", text)
-    return text.strip()
+
+    # Normalize whitespace
+    text = re.sub(r"\s+", " ", text).strip()
+    return text
 
 def parse_week_query(week_query):
     cleaned = clean_week_query(week_query)
