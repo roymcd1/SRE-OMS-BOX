@@ -7,6 +7,7 @@ from datetime import datetime, timedelta
 import openpyxl
 from io import BytesIO
 import dateparser
+import re
 
 # Load environment variables
 load_dotenv()
@@ -40,11 +41,26 @@ def download_excel_file(file_id):
         print(f"🔥 Error downloading file: {e}")
         return None
 
+def clean_week_query(week_query):
+    """
+    Remove common noise words before passing to dateparser.
+    """
+    text = week_query.lower()
+    noise_words = [
+        "rota", "for", "the", "schedule", "on call", "duty", "shift",
+        "who's", "whos", "who is", "what's", "when is", ":", "next"
+    ]
+    for word in noise_words:
+        text = re.sub(rf"\b{re.escape(word)}\b", "", text)
+    return text.strip()
+
 def parse_week_query(week_query):
+    cleaned = clean_week_query(week_query)
     parsed_date = dateparser.parse(
-        week_query,
+        cleaned,
         settings={'PREFER_DATES_FROM': 'future'}
     )
+
     if not parsed_date:
         return None, None
 
