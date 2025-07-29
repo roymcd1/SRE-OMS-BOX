@@ -41,11 +41,15 @@ def download_excel_file(file_id):
         return None
 
 def parse_week_query(week_query):
-    parsed_date = dateparser.parse(week_query)
+    parsed_date = dateparser.parse(
+        week_query,
+        settings={'PREFER_DATES_FROM': 'future'}
+    )
     if not parsed_date:
         return None, None
-    start_of_week = parsed_date - timedelta(days=parsed_date.weekday())
-    end_of_week = start_of_week + timedelta(days=6)
+
+    start_of_week = parsed_date - timedelta(days=parsed_date.weekday())  # Monday
+    end_of_week = start_of_week + timedelta(days=6)                      # Sunday
     return start_of_week.date(), end_of_week.date()
 
 def extract_names(excel_bytes, start_date, end_date):
@@ -64,6 +68,7 @@ def extract_names(excel_bytes, start_date, end_date):
                 "primary": row[3],
                 "secondary": row[5]  # Assuming column F is Secondary
             }
+
     return {"primary": None, "secondary": None}
 
 def find_upcoming_oncall(excel_bytes, person_name, today=None):
@@ -109,7 +114,9 @@ def check_document():
 
     start_date, end_date = parse_week_query(week_query)
     if not start_date or not end_date:
-        return jsonify({"error": "Could not understand week_query"}), 400
+        return jsonify({
+            "error": f"Could not understand week_query: '{week_query}'"
+        }), 400
 
     excel_bytes = download_excel_file(BOX_FILE_ID)
     if not excel_bytes:
