@@ -1,178 +1,139 @@
-import os
-import json
 from flask import Flask, request, jsonify
-from boxsdk import JWTAuth, Client
-from dotenv import load_dotenv
 from datetime import datetime, timedelta
-import openpyxl
-from io import BytesIO
+from boxsdk import JWTAuth, Client
+from openpyxl import load_workbook
+import io
+import requests
 import dateparser
+import os
 import re
 
-# Load environment variables
-load_dotenv()
-BOX_FILE_ID = os.getenv("BOX_FILE_ID")
-assert BOX_FILE_ID, "BOX_FILE_ID must be set in .env"
-
-# Box authentication (boxsdk >=3.0 style)
-with open("box_config.json") as f:
-    config = json.load(f)
-
-auth = JWTAuth(
-    client_id=config["boxAppSettings"]["clientID"],
-    client_secret=config["boxAppSettings"]["clientSecret"],
-    enterprise_id=config["enterpriseID"],
-    jwt_key_id=config["boxAppSettings"]["appAuth"]["publicKeyID"],
-    rsa_private_key_data=config["boxAppSettings"]["appAuth"]["privateKey"],
-    rsa_private_key_passphrase=config["boxAppSettings"]["appAuth"]["passphrase"].encode(),
-)
-
-auth.authenticate_instance()
-client = Client(auth)
-
-# Flask app
 app = Flask(__name__)
 
-def download_excel_file(file_id):
-    try:
-        file_content = client.file(file_id).content()
-        return BytesIO(file_content)
-    except Exception as e:
-        print(f"🔥 Error downloading file: {e}")
-        return None
+def get_box_client():
+    auth = JWTAuth.from_settings_file('box_config.json')
+    access_token = auth.authenticate_instance()
+    return Client(auth)
 
-def clean_week_query(week_query):
-    """
-    Clean filler words like 'rota for', 'schedule:', etc. before date parsing.
-    """
-    text = week_query.lower()
-    # Remove punctuation that might confuse the parser
-    text = re.sub(r"[:.,]", " ", text)
+def get_schedule_file():
+    client = get_box_client()
+    file_id = os.environ.get("BOX_FILE_ID")
+    file_content = client.file(file_id).content()
+    return load_workbook(filename=io.BytesIO(file_content), data_only=True)
 
-    # Words to strip out
-    noise_words = [
-        "rota", "schedule", "on call", "duty", "shift",
-        "for", "the", "who's", "whos", "who is", "what's", "when is"
-    ]
+def parse_date_range(raw_input):
+    if not raw_input:
+        return None, None
 
-    for word in noise_words:
-        text = re.sub(rf"\b{re.escape(word)}\b", "", text)
+    query = raw_input.lower().strip()
+    query = query.replace("on-call", "on call").replace("oncall", "on call")
+    query = re.sub(r'[^\w\s]', '', query)  # remove punctuation
 
-    # Normalize whitespace
-    text = re.sub(r"\s+", " ", text).strip()
-    return text
-
-def parse_week_query(week_query):
-    cleaned = clean_week_query(week_query)
-    parsed_date = dateparser.parse(
-        cleaned,
-        settings={'PREFER_DATES_FROM': 'future'}
+    match = re.search(
+        r"(this|next|last)?\s?(week|month|monday|tuesday|wednesday|thursday|friday|saturday|sunday|today|tomorrow|yesterday)",
+        query
     )
 
+    if not match:
+        return None, None
+
+    phrase = match.group().strip()
+    parsed_date = dateparser.parse(phrase, settings={'RELATIVE_BASE': datetime.today()})
     if not parsed_date:
         return None, None
 
-    start_of_week = parsed_date - timedelta(days=parsed_date.weekday())  # Monday
-    end_of_week = start_of_week + timedelta(days=6)                      # Sunday
-    return start_of_week.date(), end_of_week.date()
+    if 'week' in phrase:
+        start = parsed_date - timedelta(days=parsed_date.weekday())
+        end = start + timedelta(days=6)
+    else:
+        start = parsed_date.date()
+        end = start
 
-def extract_names(excel_bytes, start_date, end_date):
-    wb = openpyxl.load_workbook(excel_bytes)
-    sheet = wb.active
-
-    for row in sheet.iter_rows(min_row=2, values_only=True):
-        try:
-            excel_start = row[1].date() if hasattr(row[1], 'date') else row[1]
-            excel_end = row[2].date() if hasattr(row[2], 'date') else row[2]
-        except Exception:
-            continue
-
-        if excel_start == start_date and excel_end == end_date:
-            return {
-                "primary": row[3],
-                "secondary": row[5]  # Assuming column F is Secondary
-            }
-
-    return {"primary": None, "secondary": None}
-
-def find_upcoming_oncall(excel_bytes, person_name, today=None):
-    if today is None:
-        today = datetime.today().date()
-
-    wb = openpyxl.load_workbook(excel_bytes)
-    sheet = wb.active
-    matches = []
-
-    for row in sheet.iter_rows(min_row=2, values_only=True):
-        try:
-            excel_start = row[1].date() if hasattr(row[1], 'date') else row[1]
-            excel_end = row[2].date() if hasattr(row[2], 'date') else row[2]
-            primary = row[3]
-            secondary = row[5]
-        except Exception:
-            continue
-
-        if not excel_start or excel_start < today:
-            continue
-
-        if person_name.lower() in str(primary).lower() or person_name.lower() in str(secondary).lower():
-            matches.append({
-                "start": str(excel_start),
-                "end": str(excel_end),
-                "primary": primary,
-                "secondary": secondary,
-            })
-
-        if len(matches) == 3:
-            break
-
-    return matches
+    return start, end
 
 @app.route("/check-document", methods=["POST"])
 def check_document():
-    data = request.get_json()
-    week_query = data.get("week_query")
+    if request.content_type == "application/x-www-form-urlencoded":
+        query = request.form.get("text")
+        slack_mode = True
+    else:
+        data = request.get_json()
+        query = data.get("week_query")
+        slack_mode = False
 
-    if not week_query:
-        return jsonify({"error": "Missing 'week_query' field"}), 400
+    start, end = parse_date_range(query)
+    if not start or not end:
+        message = f"Could not understand week_query: '{query}'"
+        return jsonify(text=message) if slack_mode else jsonify({"error": message}), 400
 
-    start_date, end_date = parse_week_query(week_query)
-    if not start_date or not end_date:
-        return jsonify({
-            "error": f"Could not understand week_query: '{week_query}'"
-        }), 400
+    wb = get_schedule_file()
+    ws = wb.active
+    for row in ws.iter_rows(min_row=2, values_only=True):
+        row_start, row_end, primary, secondary = row
+        if row_start <= start <= row_end:
+            result = {
+                "start": str(row_start),
+                "end": str(row_end),
+                "names": {
+                    "primary": primary,
+                    "secondary": secondary
+                }
+            }
+            if slack_mode:
+                message = (
+                    f"📅 On-call from *{row_start}* to *{row_end}*\n"
+                    f"👨‍🚒 Primary: *{primary}*\n"
+                    f"🧯 Secondary: *{secondary}*"
+                )
+                return jsonify(text=message)
+            return jsonify(result)
 
-    excel_bytes = download_excel_file(BOX_FILE_ID)
-    if not excel_bytes:
-        return jsonify({"error": "Failed to download Excel file"}), 500
-
-    names = extract_names(excel_bytes, start_date, end_date)
-    return jsonify({
-        "start": str(start_date),
-        "end": str(end_date),
-        "names": names
-    })
+    message = "No schedule found for that week."
+    return jsonify(text=message) if slack_mode else jsonify({"error": message}), 404
 
 @app.route("/when-am-i-on-call", methods=["POST"])
 def when_am_i_on_call():
-    data = request.get_json()
-    person = data.get("name")
+    if request.content_type == "application/x-www-form-urlencoded":
+        name = request.form.get("text")
+        slack_mode = True
+    else:
+        data = request.get_json()
+        name = data.get("name")
+        slack_mode = False
 
-    if not person:
-        return jsonify({"error": "Missing 'name' field"}), 400
+    if not name:
+        message = "No name provided. Try `/whenami Jane Doe`"
+        return jsonify(text=message) if slack_mode else jsonify({"error": message}), 400
 
-    excel_bytes = download_excel_file(BOX_FILE_ID)
-    if not excel_bytes:
-        return jsonify({"error": "Failed to download Excel file"}), 500
+    wb = get_schedule_file()
+    ws = wb.active
+    today = datetime.today().date()
+    upcoming = []
+    for row in ws.iter_rows(min_row=2, values_only=True):
+        row_start, row_end, primary, secondary = row
+        if row_end >= today and (primary == name or secondary == name):
+            upcoming.append({
+                "start": str(row_start),
+                "end": str(row_end),
+                "primary": primary,
+                "secondary": secondary
+            })
 
-    upcoming = find_upcoming_oncall(excel_bytes, person)
-    return jsonify({
-        "name": person,
-        "upcoming_oncall": upcoming
-    })
+    if not upcoming:
+        message = f"No upcoming on-call slots found for *{name}*."
+        return jsonify(text=message) if slack_mode else jsonify({"name": name, "upcoming_oncall": []}), 404
+
+    if slack_mode:
+        message = f"📟 On-call slots for *{name}*:\n"
+        for slot in upcoming:
+            message += (
+                f"• {slot['start']} → {slot['end']} "
+                f"(👨‍🚒 Primary: {slot['primary']}, 🧯 Secondary: {slot['secondary']})\n"
+            )
+        return jsonify(text=message)
+
+    return jsonify({"name": name, "upcoming_oncall": upcoming})
 
 if __name__ == "__main__":
-    print(f"📦 BOX_FILE_ID = {BOX_FILE_ID}")
-    port = int(os.environ.get("PORT", 8080))
-    app.run(host="0.0.0.0", port=port)
+    app.run(debug=True)
 
