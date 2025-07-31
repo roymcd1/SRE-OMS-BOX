@@ -135,3 +135,8 @@ def slack_events():
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=8080)
 
+@app.route('/', methods=['GET'])
+def home():
+    return 'Box On-Call App is running ✅', 200
+
+
