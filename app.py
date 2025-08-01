@@ -1,4 +1,5 @@
 import os
+from datetime import date, datetime
 from flask import Flask, request, jsonify
 from dotenv import load_dotenv
 from boxsdk import JWTAuth, Client
@@ -7,144 +8,125 @@ import dateparser
 
 print("🚀 Starting app.py")
 
-# -------------------------------------------------
-# 1. Environment variable for Box file ID
-# -------------------------------------------------
+# ----------------- 1. ENV VAR -----------------
 load_dotenv()
 BOX_FILE_ID = os.getenv("BOX_FILE_ID")
-assert BOX_FILE_ID, "BOX_FILE_ID must be set in the app's environment variables"
-print(f"📦 BOX_FILE_ID loaded: {BOX_FILE_ID}")
+assert BOX_FILE_ID, "BOX_FILE_ID must be set"
+print(f"📦 BOX_FILE_ID={BOX_FILE_ID}")
 
-# -------------------------------------------------
-# 2. Locate Box config JSON (secret mount or local)
-# -------------------------------------------------
+# ----------------- 2. CONFIG PATH -------------
 SECRET_PATH = "/secrets/box_config/box_config.json"
-LOCAL_PATH  = "box_config.json"
+CONFIG_PATH = SECRET_PATH if os.path.exists(SECRET_PATH) else "box_config.json"
+print(f"📁 Using Box config: {CONFIG_PATH}")
 
-CONFIG_PATH = SECRET_PATH if os.path.exists(SECRET_PATH) else LOCAL_PATH
-print(f"📁 Using Box config file at: {CONFIG_PATH}")
-
-# -------------------------------------------------
-# 3. Authenticate with Box using the full settings file
-# -------------------------------------------------
-print("🔐 Authenticating with Box …")
+# ----------------- 3. BOX AUTH ----------------
 auth   = JWTAuth.from_settings_file(CONFIG_PATH)
 client = Client(auth)
-print("✅ Box client initialized")
+print("✅ Box client ready")
 
-# -------------------------------------------------
-# 4. Flask app & helpers
-# -------------------------------------------------
-app = Flask(__name__)
+# ----------------- 4. HELPERS -----------------
+def to_date(dt):
+    """Return a `date` or None."""
+    if dt is None:
+        return None
+    return dt.date() if hasattr(dt, "date") else dt
 
-
-def download_excel_file():
-    """Download the Excel schedule from Box to oncall_schedule.xlsx."""
+def download_excel():
     try:
-        print(f"📥 Downloading Box file {BOX_FILE_ID} …")
-        file_content = client.file(BOX_FILE_ID).content()
-        with open("oncall_schedule.xlsx", "wb") as f:
-            f.write(file_content)
-        print("✅ Excel file saved locally")
+        print("📥 Downloading Excel …")
+        content = client.file(BOX_FILE_ID).content()
+        with open("oncall.xlsx", "wb") as f:
+            f.write(content)
         return True
     except Exception as e:
-        print("❌ Error downloading file:", e)
+        print("❌ download_excel:", e)
         return str(e)
 
-
-def parse_oncall_schedule():
-    """Return a list of dicts from the Excel sheet."""
+def parse_schedule():
     try:
-        wb      = openpyxl.load_workbook("oncall_schedule.xlsx")
+        wb      = openpyxl.load_workbook("oncall.xlsx")
         sheet   = wb.active
-        headers = [cell.value for cell in sheet[1]]
-        return [dict(zip(headers, row))
-                for row in sheet.iter_rows(min_row=2, values_only=True)]
+        headers = [c.value for c in sheet[1]]
+        return [dict(zip(headers, r))
+                for r in sheet.iter_rows(min_row=2, values_only=True)]
     except Exception as e:
-        print("❌ Error parsing Excel:", e)
+        print("❌ parse_schedule:", e)
         return []
 
+# ----------------- 5. FLASK -------------------
+app = Flask(__name__)
 
-@app.route('/', methods=['GET'])
+@app.route('/')
 def home():
-    return 'Box On-Call App is running ✅', 200
-
+    return "Box On-Call App ✅", 200
 
 @app.route('/check-document', methods=['POST'])
 def check_document():
     try:
         week_query = (request.get_json() or {}).get("week_query")
         if not week_query:
-            return jsonify({"error": "Missing 'week_query' field"}), 400
+            return jsonify({"error": "Missing 'week_query'"}), 400
 
-        if download_excel_file() is not True:
+        if download_excel() is not True:
             return jsonify({"error": "Excel download failed"}), 500
 
-        data        = parse_oncall_schedule()
-        target_date = dateparser.parse(week_query)
-        if not (data and target_date):
-            return jsonify({"error": "Could not parse data or date"}), 500
+        target_dt = to_date(dateparser.parse(week_query))
+        if not target_dt:
+            return jsonify({"error": "Bad date"}), 400
 
-        for entry in data:
-            start = dateparser.parse(str(entry.get("Start"))).date()
-            end   = dateparser.parse(str(entry.get("End"))).date()
-            if start <= target_date.date() <= end:
+        for row in parse_schedule():
+            start = to_date(dateparser.parse(str(row.get("Start"))))
+            end   = to_date(dateparser.parse(str(row.get("End"))))
+            if start and end and start <= target_dt <= end:
                 return jsonify({
                     "start": str(start),
                     "end":   str(end),
                     "names": {
-                        "primary":   entry.get("Primary"),
-                        "secondary": entry.get("Secondary")
+                        "primary":   row.get("Primary"),
+                        "secondary": row.get("Secondary")
                     }
                 })
-        return jsonify({"message": "No match found"}), 404
-
+        return jsonify({"message": "No match"}), 404
     except Exception as e:
-        print("❌ /check-document error:", e)
+        print("❌ /check-document:", e)
         return jsonify({"error": str(e)}), 500
-
 
 @app.route('/when-am-i-on-call', methods=['POST'])
 def when_am_i_on_call():
     try:
         name = (request.get_json() or {}).get("name")
         if not name:
-            return jsonify({"error": "Missing 'name' field"}), 400
+            return jsonify({"error": "Missing 'name'"}), 400
 
-        if download_excel_file() is not True:
+        if download_excel() is not True:
             return jsonify({"error": "Excel download failed"}), 500
 
-        data     = parse_oncall_schedule()
-        today    = dateparser.parse("today").date()
+        today = date.today()
         upcoming = []
-
-        for entry in data:
-            start = dateparser.parse(str(entry.get("Start"))).date()
-            end   = dateparser.parse(str(entry.get("End"))).date()
-            if end >= today and (entry.get("Primary") == name or entry.get("Secondary") == name):
+        for row in parse_schedule():
+            start = to_date(dateparser.parse(str(row.get("Start"))))
+            end   = to_date(dateparser.parse(str(row.get("End"))))
+            if (start and end and end >= today and
+                (row.get("Primary") == name or row.get("Secondary") == name)):
                 upcoming.append({
                     "start":     str(start),
                     "end":       str(end),
-                    "primary":   entry.get("Primary"),
-                    "secondary": entry.get("Secondary")
+                    "primary":   row.get("Primary"),
+                    "secondary": row.get("Secondary")
                 })
-
         return jsonify({"name": name, "upcoming_oncall": upcoming})
-
     except Exception as e:
-        print("❌ /when-am-i-on-call error:", e)
+        print("❌ /when-am-i-on-call:", e)
         return jsonify({"error": str(e)}), 500
-
 
 @app.route('/slack/events', methods=['POST'])
 def slack_events():
     data = request.get_json()
     if data.get('type') == 'url_verification':
         return data.get('challenge'), 200
-    print("📥 Received Slack event:", data)
+    print("📥 Slack event:", data)
     return '', 200
 
-
-if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=8080)
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=8080)
 
