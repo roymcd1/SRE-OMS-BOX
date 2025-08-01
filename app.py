@@ -7,51 +7,66 @@ import openpyxl
 import dateparser
 from datetime import timedelta
 
-load_dotenv()
-app = Flask(__name__)
+print("🚀 Starting app.py")
 
 # Load environment variables
-box_config_path = os.getenv("BOX_CONFIG_PATH", "box_config.json")
-excel_filename = os.getenv("EXCEL_FILE_NAME", "oncall_schedule.xlsx")
-folder_id = os.getenv("BOX_FOLDER_ID")
+load_dotenv()
+BOX_FILE_ID = os.getenv("BOX_FILE_ID")
+assert BOX_FILE_ID, "BOX_FILE_ID must be set in .env"
+print(f"📦 BOX_FILE_ID loaded: {BOX_FILE_ID}")
 
-# Authenticate with Box using JWT
-auth = JWTAuth.from_settings_file(box_config_path)
+# Load Box config from mounted secret or local file
+if os.path.exists("/secrets/box_config/box_config.json"):
+    CONFIG_PATH = "/secrets/box_config/box_config.json"
+    print("📁 Loading box config from secret mount...")
+else:
+    CONFIG_PATH = "box_config.json"
+    print("📁 Loading box config from local file...")
+
+with open(CONFIG_PATH) as config_file:
+    full_config = json.load(config_file)
+
+box_config = {
+    "clientID": full_config["boxAppSettings"]["clientID"],
+    "clientSecret": full_config["boxAppSettings"]["clientSecret"],
+    "appAuth": full_config["boxAppSettings"]["appAuth"],
+    "enterpriseID": full_config["enterpriseID"]
+}
+
+print("🔐 Authenticating with Box...")
+auth = JWTAuth.from_settings_dictionary(box_config)
+auth.authenticate_instance()
 client = Client(auth)
+print("✅ Box client initialized")
+
+app = Flask(__name__)
 
 
 def download_excel_file():
     try:
-        print(f"Looking for file '{excel_filename}' in folder '{folder_id}'...")
-        items = client.folder(folder_id).get_items()
-        for item in items:
-            print(f"Found item: {item.name}")
-            if item.name == excel_filename:
-                print("Downloading Excel file...")
-                file_content = client.file(item.id).content()
-                with open(excel_filename, 'wb') as f:
-                    f.write(file_content)
-                return True
-        print("Excel file not found.")
-        return False
+        print(f"📥 Attempting to download file with BOX_FILE_ID={BOX_FILE_ID}")
+        file_content = client.file(BOX_FILE_ID).content()
+        with open("oncall_schedule.xlsx", "wb") as f:
+            f.write(file_content)
+        print("✅ Excel file downloaded and saved locally")
+        return True
     except Exception as e:
-        print("Error downloading file from Box:", e)
-        return False
+        print("❌ Error downloading Excel file from Box:", e)
+        return str(e)
 
 
 def parse_oncall_schedule():
     try:
-        wb = openpyxl.load_workbook(excel_filename)
+        wb = openpyxl.load_workbook("oncall_schedule.xlsx")
         sheet = wb.active
         headers = [cell.value for cell in sheet[1]]
         data = []
-
         for row in sheet.iter_rows(min_row=2, values_only=True):
             row_dict = dict(zip(headers, row))
             data.append(row_dict)
         return data
     except Exception as e:
-        print("Error parsing Excel file:", e)
+        print("❌ Error parsing Excel file:", e)
         return []
 
 
@@ -69,8 +84,12 @@ def check_document():
         if not week_query:
             return jsonify({"error": "Missing 'week_query' field"}), 400
 
-        if not download_excel_file():
-            return jsonify({"error": "Excel file could not be downloaded"}), 500
+        download_result = download_excel_file()
+        if download_result is not True:
+            return jsonify({
+                "error": "Excel file could not be downloaded",
+                "detail": download_result
+            }), 500
 
         data = parse_oncall_schedule()
         if not data:
@@ -94,13 +113,13 @@ def check_document():
                         }
                     })
             except Exception as e:
-                print("Error parsing entry:", entry, e)
+                print("❌ Error parsing entry:", entry, e)
                 continue
 
         return jsonify({"message": "No match found"}), 404
 
     except Exception as e:
-        print("Error in /check-document:", e)
+        print("❌ Error in /check-document:", e)
         return jsonify({"error": str(e)}), 500
 
 
@@ -113,8 +132,12 @@ def when_am_i_on_call():
         if not name:
             return jsonify({"error": "Missing 'name' field"}), 400
 
-        if not download_excel_file():
-            return jsonify({"error": "Excel file could not be downloaded"}), 500
+        download_result = download_excel_file()
+        if download_result is not True:
+            return jsonify({
+                "error": "Excel file could not be downloaded",
+                "detail": download_result
+            }), 500
 
         data = parse_oncall_schedule()
         if not data:
@@ -134,8 +157,7 @@ def when_am_i_on_call():
                         "primary": entry.get("Primary"),
                         "secondary": entry.get("Secondary")
                     })
-            except Exception as e:
-                print("Error parsing entry:", entry, e)
+            except Exception:
                 continue
 
         return jsonify({
@@ -144,7 +166,7 @@ def when_am_i_on_call():
         })
 
     except Exception as e:
-        print("Error in /when-am-i-on-call:", e)
+        print("❌ Error in /when-am-i-on-call:", e)
         return jsonify({"error": str(e)}), 500
 
 
@@ -153,7 +175,7 @@ def slack_events():
     data = request.get_json()
     if data.get('type') == 'url_verification':
         return data.get('challenge'), 200
-    print("Received Slack event:", json.dumps(data, indent=2))
+    print("📥 Received Slack event:", json.dumps(data, indent=2))
     return '', 200
 
 
