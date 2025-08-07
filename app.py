@@ -1,10 +1,11 @@
 import os
-from datetime import date, datetime
-from flask import Flask, request, jsonify
+from datetime import date
+from flask import Flask, request, jsonify, send_file
 from dotenv import load_dotenv
 from boxsdk import JWTAuth, Client
 import openpyxl
 import dateparser
+import subprocess
 
 print("🚀 Starting app.py")
 
@@ -26,7 +27,6 @@ print("✅ Box client ready")
 
 # ----------------- 4. HELPERS -----------------
 def to_date(dt):
-    """Return a `date` or None."""
     if dt is None:
         return None
     return dt.date() if hasattr(dt, "date") else dt
@@ -118,6 +118,35 @@ def when_am_i_on_call():
     except Exception as e:
         print("❌ /when-am-i-on-call:", e)
         return jsonify({"error": str(e)}), 500
+
+@app.route('/rota-pdf', methods=['GET'])
+def rota_pdf():
+    try:
+        if download_excel() is not True:
+            return "Failed to download Excel file", 500
+
+        input_path  = os.path.abspath("oncall.xlsx")
+        output_dir  = os.path.abspath(".")
+        pdf_path    = os.path.join(output_dir, "oncall.pdf")
+
+        print("🌀 Converting Excel to PDF...")
+        result = subprocess.run([
+            "libreoffice", "--headless", "--convert-to", "pdf",
+            "--outdir", output_dir, input_path
+        ], capture_output=True)
+
+        if result.returncode != 0:
+            print("❌ PDF conversion failed:", result.stderr.decode())
+            return "PDF conversion failed", 500
+
+        if not os.path.exists(pdf_path):
+            return "PDF not created", 500
+
+        print("✅ PDF ready:", pdf_path)
+        return send_file(pdf_path, as_attachment=True)
+    except Exception as e:
+        print("❌ /rota-pdf:", e)
+        return str(e), 500
 
 @app.route('/slack/events', methods=['POST'])
 def slack_events():

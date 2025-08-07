@@ -1,18 +1,29 @@
-# Use a small Python image
+# Use an official lightweight Python image
 FROM python:3.11-slim
 
-# Set working directory inside the container
+# Set working directory
 WORKDIR /app
 
-# Copy all files from your current folder into the container
-COPY . /app
+# Install system-level dependencies
+RUN apt-get update && apt-get install -y \
+    libreoffice \
+    fonts-dejavu \
+    curl \
+    unzip \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
 
-# Install Python dependencies listed in requirements.txt
+# Copy Python requirements and install
+COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Let IBM Code Engine know your app runs on port 8080
-EXPOSE 8080
+# Copy all app files
+COPY . .
 
-# Start the app using Python
+# Expose the Flask port
+EXPOSE 8080
+ENV PORT=8080
+
+# Run the Flask app
 CMD ["python", "app.py"]
 
