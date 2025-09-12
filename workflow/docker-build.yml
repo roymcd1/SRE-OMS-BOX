@@ -1,4 +1,4 @@
-name: Build and Push Docker image
+name: Build and Push to Docker Hub
 
 on:
   push:
@@ -8,9 +8,8 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
-
     steps:
-      - name: Checkout code
+      - name: Checkout
         uses: actions/checkout@v4
 
       - name: Log in to Docker Hub
@@ -19,8 +18,9 @@ jobs:
           username: ${{ secrets.DOCKER_USERNAME }}
           password: ${{ secrets.DOCKER_PASSWORD }}
 
-      - name: Build and push Docker image
+      - name: Build and push
         uses: docker/build-push-action@v5
         with:
+          context: .
           push: true
-          tags: docker.io/${{ secrets.DOCKER_USERNAME }}/box-oncall:latest
+          tags: docker.io/roymcddddd/box-oncall:latest
